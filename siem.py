@@ -107,9 +107,61 @@ SECURITY_PATTERNS = {
     r'(?i)(unauthorized|permission.?denied|access.?denied)': ('Data', 'Unauthorized Access', 'HIGH'),
 }
 
-# Windows Event IDs and their meanings
+# Windows Event IDs and their meanings (System & Application logs work without admin)
 WINDOWS_EVENT_MAPPING = {
-    # Security Events
+    # ===== SYSTEM LOG EVENTS (No admin needed) =====
+    1: ('System', 'System Event', 'INFO'),
+    6: ('System', 'Driver Loaded', 'INFO'),
+    7: ('System', 'Driver Load Failed', 'HIGH'),
+    10: ('System', 'Event Processing Error', 'MEDIUM'),
+    12: ('System', 'OS Starting', 'INFO'),
+    13: ('System', 'OS Shutdown', 'INFO'),
+    20: ('System', 'Boot Notification', 'INFO'),
+    41: ('System', 'Unexpected Shutdown', 'CRITICAL'),
+    104: ('System', 'Event Log Cleared', 'HIGH'),
+    1001: ('System', 'Windows Error Report', 'MEDIUM'),
+    1014: ('System', 'DNS Resolution Timeout', 'MEDIUM'),
+    1074: ('System', 'System Shutdown/Restart', 'INFO'),
+    6005: ('System', 'Event Log Started', 'INFO'),
+    6006: ('System', 'Event Log Stopped', 'INFO'),
+    6008: ('System', 'Unexpected Shutdown', 'HIGH'),
+    6009: ('System', 'OS Version Info', 'INFO'),
+    6013: ('System', 'System Uptime', 'INFO'),
+    7000: ('System', 'Service Start Failed', 'HIGH'),
+    7001: ('System', 'Service Dependency Failed', 'HIGH'),
+    7009: ('System', 'Service Connect Timeout', 'MEDIUM'),
+    7011: ('System', 'Service Timeout', 'MEDIUM'),
+    7022: ('System', 'Service Hung', 'HIGH'),
+    7023: ('System', 'Service Terminated Error', 'HIGH'),
+    7024: ('System', 'Service Terminated', 'MEDIUM'),
+    7026: ('System', 'Boot Driver Failed', 'HIGH'),
+    7031: ('System', 'Service Crashed', 'HIGH'),
+    7032: ('System', 'Service Recovery', 'MEDIUM'),
+    7034: ('System', 'Service Crashed Unexpectedly', 'HIGH'),
+    7035: ('System', 'Service Control Sent', 'INFO'),
+    7036: ('System', 'Service State Changed', 'INFO'),
+    7040: ('System', 'Service Start Type Changed', 'MEDIUM'),
+    7045: ('System', 'New Service Installed', 'HIGH'),
+    10000: ('System', 'COM+ Event', 'INFO'),
+    10001: ('System', 'COM+ Error', 'MEDIUM'),
+    10010: ('System', 'COM Server Start Timeout', 'MEDIUM'),
+    10016: ('System', 'DCOM Permission Error', 'MEDIUM'),
+    
+    # ===== APPLICATION LOG EVENTS (No admin needed) =====
+    0: ('Application', 'Application Event', 'INFO'),
+    1000: ('Application', 'Application Error', 'HIGH'),
+    1001: ('Application', 'Application Fault', 'HIGH'),
+    1002: ('Application', 'Application Hang', 'HIGH'),
+    1026: ('Application', '.NET Runtime Error', 'HIGH'),
+    1033: ('Application', 'Windows Installer', 'INFO'),
+    1034: ('Application', 'Windows Update Removed', 'MEDIUM'),
+    1040: ('Application', 'DCOM Service Started', 'INFO'),
+    11707: ('Application', 'Installation Success', 'INFO'),
+    11708: ('Application', 'Installation Failed', 'HIGH'),
+    11724: ('Application', 'Uninstall Complete', 'INFO'),
+    1034: ('Application', 'App Reconfigured', 'INFO'),
+    
+    # ===== SECURITY LOG EVENTS (Needs admin) =====
     4624: ('Authentication', 'Login Success', 'INFO'),
     4625: ('Authentication', 'Login Failed', 'HIGH'),
     4634: ('Authentication', 'Logout', 'INFO'),
@@ -142,17 +194,6 @@ WINDOWS_EVENT_MAPPING = {
     4713: ('System', 'Kerberos Policy Changed', 'HIGH'),
     4719: ('System', 'Audit Policy Changed', 'HIGH'),
     4739: ('System', 'Domain Policy Changed', 'HIGH'),
-    
-    # System Events
-    1074: ('System', 'System Shutdown/Restart', 'INFO'),
-    6005: ('System', 'Event Log Started', 'INFO'),
-    6006: ('System', 'Event Log Stopped', 'INFO'),
-    6008: ('System', 'Unexpected Shutdown', 'HIGH'),
-    7034: ('System', 'Service Crashed', 'HIGH'),
-    7035: ('System', 'Service Control', 'INFO'),
-    7036: ('System', 'Service State Change', 'INFO'),
-    7040: ('System', 'Service Start Type Changed', 'MEDIUM'),
-    7045: ('System', 'New Service Installed', 'HIGH'),
     
     # Firewall Events
     5152: ('Firewall', 'Packet Dropped', 'LOW'),
@@ -193,10 +234,13 @@ class WindowsEventLogCollector:
     
     def __init__(self, event_queue, log_types=None):
         self.event_queue = event_queue
-        self.log_types = log_types or ['Security', 'System', 'Application']
+        # Try System and Application first (no admin needed), then Security
+        self.log_types = log_types or ['System', 'Application', 'Security']
         self.running = False
         self.last_records = {}
+        self.accessible_logs = []
         self.thread = None
+        self.initial_load_done = False
         
     def start(self):
         if not HAS_WIN32:
@@ -214,25 +258,59 @@ class WindowsEventLogCollector:
     
     def _collect_loop(self):
         """Main collection loop"""
-        # Initialize last record numbers
+        # First, check which logs are accessible and load initial events
         for log_type in self.log_types:
             try:
                 hand = win32evtlog.OpenEventLog(None, log_type)
-                flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
                 total = win32evtlog.GetNumberOfEventLogRecords(hand)
                 self.last_records[log_type] = total
+                self.accessible_logs.append(log_type)
                 win32evtlog.CloseEventLog(hand)
+                print(f"✓ {log_type} log accessible ({total} events)")
+                
+                # Load recent events from this log
+                self._load_recent_events(log_type, count=50)
+                
             except Exception as e:
-                print(f"Error initializing {log_type} log: {e}")
+                print(f"✗ {log_type} log not accessible (needs admin): {e}")
                 self.last_records[log_type] = 0
         
+        self.initial_load_done = True
+        print(f"Monitoring {len(self.accessible_logs)} Windows Event Logs...")
+        
+        # Now monitor for new events
         while self.running:
-            for log_type in self.log_types:
+            for log_type in self.accessible_logs:
                 try:
                     self._read_new_events(log_type)
                 except Exception as e:
-                    print(f"Error reading {log_type} log: {e}")
-            time.sleep(1)  # Poll every second
+                    pass  # Silently handle errors
+            time.sleep(2)  # Poll every 2 seconds
+    
+    def _load_recent_events(self, log_type, count=50):
+        """Load recent events from a log"""
+        try:
+            hand = win32evtlog.OpenEventLog(None, log_type)
+            flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+            
+            events_loaded = 0
+            while events_loaded < count:
+                events = win32evtlog.ReadEventLog(hand, flags, 0)
+                if not events:
+                    break
+                    
+                for event in events:
+                    if events_loaded >= count:
+                        break
+                    parsed = self._parse_windows_event(event, log_type)
+                    if parsed:
+                        self.event_queue.put(parsed)
+                        events_loaded += 1
+            
+            win32evtlog.CloseEventLog(hand)
+            print(f"  Loaded {events_loaded} recent events from {log_type}")
+        except Exception as e:
+            print(f"Error loading events from {log_type}: {e}")
     
     def _read_new_events(self, log_type):
         """Read new events from a specific log"""
@@ -241,14 +319,14 @@ class WindowsEventLogCollector:
             flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
             
             total = win32evtlog.GetNumberOfEventLogRecords(hand)
+            last_count = self.last_records.get(log_type, total)
             
-            if total > self.last_records.get(log_type, 0):
-                # Read new events
+            if total > last_count:
+                # New events available
+                new_count = min(total - last_count, 100)  # Max 100 at a time
                 events = win32evtlog.ReadEventLog(hand, flags, 0)
                 
-                new_count = total - self.last_records.get(log_type, 0)
                 processed = 0
-                
                 for event in events:
                     if processed >= new_count:
                         break
@@ -262,7 +340,7 @@ class WindowsEventLogCollector:
             
             win32evtlog.CloseEventLog(hand)
         except Exception as e:
-            pass  # Silently handle errors
+            pass
     
     def _parse_windows_event(self, event, log_type):
         """Parse a Windows event into our format"""
