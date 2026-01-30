@@ -1,0 +1,10 @@
+{
+  "threshold": "MEDIUM",
+  "max_events": "5000",
+  "win_enabled": true,
+  "log_enabled": true,
+  "log_paths": "",
+  "syslog_enabled": true,
+  "syslog_port": "514",
+  "net_enabled": true
+}
