@@ -1,0 +1,8 @@
+# SIEM - Security Information and Event Management
+# Python dependencies
+
+# Windows Event Log access (required for Windows)
+pywin32>=306
+
+# Optional: Better file monitoring
+# watchdog>=3.0.0

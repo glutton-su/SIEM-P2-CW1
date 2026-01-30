@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# Settings (user-specific)
+siem_settings.json
+
+# Test files
+test.json
+
+# Old monolithic file (replaced by modular structure)
+siem.py
+
+# IDE
+.vscode/
+.idea/
+
+# Images (keep ico, ignore large files)
+*.jpg
+*.png
+!siem/siemlogo.ico

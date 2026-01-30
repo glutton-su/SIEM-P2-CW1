@@ -6,6 +6,8 @@ The main window and tab management for the SIEM system.
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json
+import os
+import sys
 from datetime import datetime
 from collections import deque
 
@@ -26,10 +28,13 @@ class SIEMApplication:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("🛡️ SIEM - Security Information & Event Management")
+        self.root.title("SIEM - Security Information & Event Management")
         self.root.geometry("1400x850")
         self.root.configure(bg=COLORS['bg_dark'])
         self.root.minsize(1200, 700)
+        
+        # Set window icon
+        self._set_icon()
         
         # Data storage
         self.events = deque(maxlen=5000)
@@ -64,6 +69,23 @@ class SIEMApplication:
         
         # Start event processing
         self.process_events()
+    
+    def _set_icon(self):
+        """Set the application window icon"""
+        try:
+            # Try multiple paths for the icon
+            icon_paths = [
+                os.path.join(os.path.dirname(__file__), '..', 'siemlogo.ico'),  # Relative to app.py
+                os.path.join(os.path.dirname(sys.executable), 'siem', 'siemlogo.ico'),  # For PyInstaller
+                os.path.join(sys._MEIPASS, 'siem', 'siemlogo.ico') if hasattr(sys, '_MEIPASS') else None,  # PyInstaller temp
+            ]
+            
+            for icon_path in icon_paths:
+                if icon_path and os.path.exists(icon_path):
+                    self.root.iconbitmap(icon_path)
+                    return
+        except Exception as e:
+            pass  # Icon not critical, continue without it
         
     def setup_styles(self):
         """Configure ttk styles"""
