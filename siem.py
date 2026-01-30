@@ -1095,6 +1095,7 @@ class SIEMApplication:
                                   bg=COLORS['bg_secondary'])
         self.time_label.pack(side='left', padx=20)
         self.update_time()
+        self.refresh_analytics()  # Start analytics refresh loop
         
         self.monitor_btn = ModernButton(controls, "▶ Start Monitor", 
                                        command=self.toggle_monitoring,
@@ -1551,6 +1552,11 @@ class SIEMApplication:
         self.time_label.configure(text=now.strftime("%Y-%m-%d %H:%M:%S"))
         self.root.after(1000, self.update_time)
     
+    def refresh_analytics(self):
+        """Periodically refresh analytics charts"""
+        self.update_analytics_charts()
+        self.root.after(5000, self.refresh_analytics)  # Refresh every 5 seconds
+    
     def process_events(self):
         """Process events from the queue"""
         events = self.event_queue.get_all()
@@ -1598,6 +1604,11 @@ class SIEMApplication:
         # Update UI
         self.update_stats()
         self.update_recent_events()
+        
+        # Update analytics charts periodically (every 10 events to avoid lag)
+        total = sum(self.event_counts.values())
+        if total % 10 == 0 or total <= 10:
+            self.update_analytics_charts()
     
     def add_alert(self, event):
         """Add an alert"""
@@ -1713,6 +1724,10 @@ class SIEMApplication:
     
     def update_analytics_charts(self):
         """Update analytics charts"""
+        # Check if charts are initialized
+        if not hasattr(self, 'category_chart') or not hasattr(self, 'severity_chart'):
+            return
+            
         # Category chart
         self.category_chart.delete('all')
         
