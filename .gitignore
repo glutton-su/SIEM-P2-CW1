@@ -22,3 +22,4 @@ siem.py
 *.jpg
 *.png
 !siem/siemlogo.ico
+tests_output.txt
