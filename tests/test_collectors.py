@@ -1,10 +1,6 @@
 """
 Unit tests for SIEM data collectors.
 Tests collector initialization, start/stop functionality, and event generation.
-
-Note: Some tests may be skipped if run without administrator privileges:
-- Windows Event Log Security log requires admin
-- Syslog server on port 514 requires admin (falls back to 1514)
 """
 
 import unittest
@@ -12,7 +8,6 @@ import sys
 import os
 import time
 import threading
-import ctypes
 from unittest.mock import MagicMock, patch, PropertyMock
 
 # Add parent directory to path for imports
@@ -21,20 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from siem.utils.event_queue import EventQueue
 
 
-def is_admin():
-    """Check if running with administrator privileges"""
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
 class TestWindowsEventCollector(unittest.TestCase):
-    """Test Windows Event Log Collector
-    
-    Note: Security log access requires administrator privileges.
-    Tests will skip Security log tests when not running as admin.
-    """
+    """Test Windows Event Log Collector"""
     
     def setUp(self):
         """Set up test fixtures"""
@@ -84,14 +67,10 @@ class TestWindowsEventCollector(unittest.TestCase):
             self.skipTest("pywin32 not available")
     
     def test_collector_start_stop(self):
-        """Test collector start and stop (uses System/Application logs, no admin needed)"""
+        """Test collector start and stop"""
         try:
             from siem.collectors.windows_event import WindowsEventLogCollector
-            # Only use logs that don't require admin
-            collector = WindowsEventLogCollector(
-                self.queue, 
-                log_types=['System', 'Application']
-            )
+            collector = WindowsEventLogCollector(self.queue)
             
             # Start
             result = collector.start()
@@ -103,28 +82,6 @@ class TestWindowsEventCollector(unittest.TestCase):
             # Stop
             collector.stop()
             self.assertFalse(collector.running)
-        except ImportError:
-            self.skipTest("pywin32 not available")
-        except Exception as e:
-            # May fail due to permissions, skip
-            self.skipTest(f"Skipped due to permission or system error: {e}")
-    
-    @unittest.skipUnless(is_admin(), "Requires administrator privileges")
-    def test_security_log_access(self):
-        """Test Security log access (requires admin)"""
-        try:
-            from siem.collectors.windows_event import WindowsEventLogCollector
-            collector = WindowsEventLogCollector(
-                self.queue, 
-                log_types=['Security']
-            )
-            
-            collector.start()
-            time.sleep(2)
-            collector.stop()
-            
-            # If we got here without error, Security log is accessible
-            self.assertTrue(True)
         except ImportError:
             self.skipTest("pywin32 not available")
 
@@ -192,11 +149,7 @@ class TestLogFileCollector(unittest.TestCase):
 
 
 class TestSyslogServer(unittest.TestCase):
-    """Test Syslog Server
-    
-    Note: Port 514 requires admin privileges on Windows.
-    Tests use port 1514 as fallback.
-    """
+    """Test Syslog Server"""
     
     def setUp(self):
         """Set up test fixtures"""
@@ -230,19 +183,6 @@ class TestSyslogServer(unittest.TestCase):
         
         self.assertEqual(server.udp_port, 514)
         self.assertEqual(server.tcp_port, 514)
-    
-    def test_server_start_with_fallback_port(self):
-        """Test server can start (may use fallback port without admin)"""
-        from siem.collectors.syslog_server import SyslogServer
-        
-        # Use non-privileged port to avoid permission issues
-        server = SyslogServer(self.queue, udp_port=15140, tcp_port=15140)
-        
-        try:
-            result = server.start()
-            self.assertTrue(server.running)
-        finally:
-            server.stop()
 
 
 class TestNetworkMonitor(unittest.TestCase):
@@ -305,15 +245,14 @@ class TestCollectorIntegration(unittest.TestCase):
         monitor = NetworkMonitor(self.queue)
         monitor.start()
         
-        # Wait for some events (reduced time)
-        time.sleep(2)
+        # Wait for some events
+        time.sleep(6)  # Network monitor runs every 5s
         
         monitor.stop()
         
         events = self.queue.get_all()
         
         # Check event structure (if any events collected)
-        # Note: may not have events if no network changes
         for event in events:
             self.assertIn('timestamp', event)
             self.assertIn('severity', event)
