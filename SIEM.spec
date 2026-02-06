@@ -18,7 +18,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('siem/siemlogo.ico', 'siem'),
-        ('siem/siemlogo.jpg', 'siem'),
     ],
     hiddenimports=[
         'win32evtlog',
