@@ -60,4 +60,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='siem/siemlogo.ico',  # Application icon
+    uac_admin=True,  # Request administrator privileges on startup
 )

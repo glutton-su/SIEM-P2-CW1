@@ -59,12 +59,25 @@ class LogFileCollector:
             time.sleep(1)
     
     def _read_directory(self, directory):
-        """Read all log files in a directory"""
+        """Recursively read all log files in a directory and subdirectories"""
         log_extensions = ['.log', '.txt', '.csv', '.json']
         try:
-            for file in os.listdir(directory):
-                if any(file.lower().endswith(ext) for ext in log_extensions):
-                    self._read_file(os.path.join(directory, file))
+            for entry in os.listdir(directory):
+                full_path = os.path.join(directory, entry)
+                if os.path.isdir(full_path):
+                    # Recursively process subdirectories
+                    self._read_directory(full_path)
+                elif os.path.isfile(full_path):
+                    entry_lower = entry.lower()
+                    # Check for standard log extensions
+                    if any(entry_lower.endswith(ext) for ext in log_extensions):
+                        self._read_file(full_path)
+                    # Also check for rotated logs with numeric suffixes (e.g., .log.1, .log.0)
+                    elif any(ext in entry_lower for ext in log_extensions):
+                        self._read_file(full_path)
+                    # Check for files without extension that might be logs (e.g., audit_db, ssh_debug_log)
+                    elif '_log' in entry_lower or entry_lower.endswith('_db'):
+                        self._read_file(full_path)
         except Exception as e:
             pass
     
