@@ -108,6 +108,9 @@ class LogFileCollector:
     
     def _parse_log_line(self, line, filepath):
         """Parse a log line into our event format"""
+        # Convert line to lowercase for case-insensitive matching
+        line_lower = line.lower()
+
         # Try to extract timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -132,12 +135,17 @@ class LogFileCollector:
         event_name = 'Log Entry'
         severity = 'INFO'
         
+        matched = False
         for pattern, (cat, evt, sev) in SECURITY_PATTERNS.items():
-            if re.search(pattern, line):
+            if re.search(pattern, line_lower):
                 category = cat
                 event_name = evt
                 severity = sev
+                matched = True
                 break
+        
+        if not matched:
+            print(f"No match for line: {line}")  # Debug logging for unmatched lines
         
         # Extract IP if present
         ip = self._extract_ip(line)

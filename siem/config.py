@@ -40,6 +40,8 @@ SECURITY_PATTERNS = {
     r'(?i)(password).*(change|reset|expire)': ('Authentication', 'Password Change', 'MEDIUM'),
     r'(?i)(account).*(lock|disable|block)': ('Authentication', 'Account Locked', 'HIGH'),
     r'(?i)(brute.?force|multiple.?failed)': ('Authentication', 'Brute Force Attempt', 'CRITICAL'),
+    r'(?i)(failed password for invalid user)': ('Authentication', 'Brute Force Attempt', 'CRITICAL'),
+    r'(?i)(failed password)': ('Authentication', 'Failed Login Attempt', 'HIGH'),
     
     # Network patterns
     r'(?i)(connection).*(refused|denied|blocked)': ('Network', 'Connection Blocked', 'MEDIUM'),
@@ -47,6 +49,7 @@ SECURITY_PATTERNS = {
     r'(?i)(ddos|dos.?attack|flood)': ('Network', 'DDoS Attempt', 'CRITICAL'),
     r'(?i)(firewall).*(block|deny|drop)': ('Firewall', 'Packet Dropped', 'MEDIUM'),
     r'(?i)(intrusion|ids|ips).*(detect|alert)': ('Firewall', 'Intrusion Detected', 'CRITICAL'),
+    r'(?i)(high traffic detected from ip)': ('Network', 'DoS Attempt', 'CRITICAL'),
     
     # Malware patterns
     r'(?i)(malware|virus|trojan|ransomware|worm)': ('Malware', 'Threat Detected', 'CRITICAL'),
