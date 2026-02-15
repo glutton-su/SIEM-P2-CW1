@@ -128,24 +128,124 @@ class SIEMApplication:
     def create_ui(self):
         """Create the main UI layout"""
         self.create_header()
-        
         main_container = tk.Frame(self.root, bg=COLORS['bg_dark'])
         main_container.pack(fill='both', expand=True, padx=20, pady=(0, 20))
-        
         self.create_sidebar(main_container)
-        
         content_frame = tk.Frame(main_container, bg=COLORS['bg_dark'])
         content_frame.pack(side='left', fill='both', expand=True, padx=(20, 0))
-        
         self.notebook = ttk.Notebook(content_frame, style="Custom.TNotebook")
         self.notebook.pack(fill='both', expand=True)
-        
         self.create_dashboard_tab()
         self.create_events_tab()
         self.create_alerts_tab()
         self.create_sources_tab()
         self.create_analytics_tab()
+        self.create_static_analysis_tab()  # <-- New tab
         self.create_settings_tab()
+
+    def create_static_analysis_tab(self):
+        """Create the Static Analysis tab for one-time log analysis"""
+        import os
+        static_tab = tk.Frame(self.notebook, bg=COLORS['bg_dark'])
+        self.notebook.add(static_tab, text="  🗂️ Static Analysis  ")
+
+        title = tk.Label(static_tab, text="🗂️ Static Log Analysis", font=('Segoe UI', 18, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_dark'])
+        title.pack(pady=20, padx=20, anchor='w')
+
+        container = tk.Frame(static_tab, bg=COLORS['bg_secondary'])
+        container.pack(fill='both', expand=True, padx=20, pady=(0, 20))
+
+        # Path selection
+        path_frame = tk.Frame(container, bg=COLORS['bg_secondary'])
+        path_frame.pack(fill='x', pady=10)
+        self.static_log_path_var = tk.StringVar()
+        tk.Label(path_frame, text="Log Path:", font=('Segoe UI', 10), fg=COLORS['text_primary'], bg=COLORS['bg_secondary']).pack(side='left')
+        tk.Entry(path_frame, textvariable=self.static_log_path_var, width=40, font=('Segoe UI', 10), bg=COLORS['bg_tertiary'], fg=COLORS['text_primary']).pack(side='left', padx=10)
+        ModernButton(path_frame, "Browse", command=self.browse_static_log_path, width=80, bg_color=COLORS['accent_blue']).pack(side='left')
+        ModernButton(path_frame, "Analyze", command=self.analyze_static_logs, width=80, bg_color=COLORS['accent_green']).pack(side='left', padx=5)
+
+        # Results table
+        columns = ("Timestamp", "Severity", "Source", "Category", "Event", "IP", "Message")
+        self.static_tree = ttk.Treeview(container, columns=columns, show='headings', height=20, style="Custom.Treeview")
+        for col in columns:
+            self.static_tree.heading(col, text=col)
+            self.static_tree.column(col, width=120 if col != "Message" else 400, anchor='w')
+        self.static_tree.pack(fill='both', expand=True, pady=10)
+
+    def browse_static_log_path(self):
+        """Browse for static log file or directory"""
+        import os
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Select Log File")
+        if not path:
+            path = filedialog.askdirectory(title="Select Log Directory")
+        if path:
+            self.static_log_path_var.set(path)
+
+    def analyze_static_logs(self):
+        """Analyze the selected log file or directory for alerts/events"""
+        import os
+        from ..collectors import LogFileCollector
+        from ..utils import EventQueue
+        from tkinter import messagebox
+        path = self.static_log_path_var.get()
+        if not path:
+            messagebox.showwarning("No Path", "Please select a log file or directory first.")
+            return
+        # Clear previous results
+        for item in self.static_tree.get_children():
+            self.static_tree.delete(item)
+        temp_queue = EventQueue()
+        temp_collector = LogFileCollector(temp_queue)
+        files_read = 0
+        log_extensions = ['.log', '.txt', '.csv', '.json']
+        def read_entire_file(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            event = temp_collector._parse_log_line(line, filepath)
+                            if event:
+                                temp_queue.put(event)
+            except Exception:
+                pass
+        if os.path.isfile(path):
+            read_entire_file(path)
+            files_read += 1
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    file_lower = file.lower()
+                    full_path = os.path.join(root, file)
+                    if any(file_lower.endswith(ext) for ext in log_extensions):
+                        read_entire_file(full_path)
+                        files_read += 1
+                    elif any(ext in file_lower for ext in log_extensions):
+                        read_entire_file(full_path)
+                        files_read += 1
+                    elif '_log' in file_lower or file_lower.endswith('_db'):
+                        read_entire_file(full_path)
+                        files_read += 1
+        # Display results
+        event_count = 0
+        while True:
+            try:
+                event = temp_queue.get_nowait()
+                self.static_tree.insert('', 'end', values=(
+                    event.get('timestamp', ''),
+                    event.get('severity', 'INFO'),
+                    event.get('source', '-'),
+                    event.get('category', '-'),
+                    event.get('event', '-'),
+                    event.get('ip', '-'),
+                    event.get('message', '')[:300]
+                ))
+                event_count += 1
+            except Exception:
+                break
+        from tkinter import messagebox
+        messagebox.showinfo("Static Analysis Complete", f"Analyzed {files_read} files. Found {event_count} events.")
     
     def create_header(self):
         """Create the application header"""
@@ -436,6 +536,9 @@ class SIEMApplication:
         
         ModernButton(path_frame, "Browse", command=self.browse_log_path,
                     width=80, bg_color=COLORS['accent_blue']).pack(side='left')
+        
+        ModernButton(path_frame, "Preview", command=self.preview_static_logs,
+                    width=80, bg_color=COLORS['accent_green']).pack(side='left', padx=5)
         
         # Syslog Server
         syslog_frame = tk.LabelFrame(container, text=" 📨 Syslog Server ",
@@ -878,6 +981,89 @@ class SIEMApplication:
                 self.log_paths_var.set(f"{current};{path}")
             else:
                 self.log_paths_var.set(path)
+    
+    def preview_static_logs(self):
+        """Preview logs statically without live monitoring"""
+        paths = self.log_paths_var.get()
+        if not paths:
+            messagebox.showwarning("No Path", "Please select a log directory first using Browse.")
+            return
+        
+        # Ask user if they want to clear existing events
+        if self.events:
+            clear = messagebox.askyesno("Clear Events", 
+                "Do you want to clear existing events before loading?")
+            if clear:
+                self.events.clear()
+                for item in self.events_tree.get_children():
+                    self.events_tree.delete(item)
+                self.event_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
+                self.category_counts = {}
+        
+        # Create a temporary collector just for reading (not monitoring)
+        from ..collectors import LogFileCollector
+        temp_queue = EventQueue()
+        temp_collector = LogFileCollector(temp_queue)
+        
+        # Read all logs from specified paths
+        loaded_count = 0
+        for path in paths.split(';'):
+            path = path.strip()
+            if path:
+                loaded_count += self._load_static_logs(path, temp_collector)
+        
+        # Process all collected events from the temp queue
+        event_count = 0
+        while not temp_queue.empty():
+            try:
+                event = temp_queue.get_nowait()
+                self.process_event(event)
+                event_count += 1
+            except:
+                break
+        
+        messagebox.showinfo("Preview Complete", 
+            f"Loaded {event_count} log entries from {loaded_count} files.")
+    
+    def _load_static_logs(self, path, collector):
+        """Load logs from a path statically (one-time read)"""
+        import os
+        files_read = 0
+        log_extensions = ['.log', '.txt', '.csv', '.json']
+        
+        if os.path.isfile(path):
+            self._read_entire_file(path, collector)
+            return 1
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    file_lower = file.lower()
+                    full_path = os.path.join(root, file)
+                    # Check for log files
+                    if any(file_lower.endswith(ext) for ext in log_extensions):
+                        self._read_entire_file(full_path, collector)
+                        files_read += 1
+                    elif any(ext in file_lower for ext in log_extensions):
+                        self._read_entire_file(full_path, collector)
+                        files_read += 1
+                    elif '_log' in file_lower or file_lower.endswith('_db'):
+                        self._read_entire_file(full_path, collector)
+                        files_read += 1
+        return files_read
+    
+    def _read_entire_file(self, filepath, collector):
+        """Read entire file content for static preview"""
+        import os
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        event = collector._parse_log_line(line, filepath)
+                        if event:
+                            collector.event_queue.put(event)
+        except Exception as e:
+            pass
     
     def filter_events(self, severity=None):
         """Filter events by severity"""
