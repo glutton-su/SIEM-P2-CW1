@@ -139,6 +139,9 @@ class SIEMApplication:
         self.create_analytics_tab()
         self.create_static_analysis_tab()  # <-- New tab
         self.create_settings_tab()
+        
+        # Load saved settings after UI is created
+        self.load_settings()
 
     def create_static_analysis_tab(self):
         """Create the Static Analysis tab for one-time log analysis"""
@@ -768,12 +771,15 @@ class SIEMApplication:
         port_frame = tk.Frame(syslog_inner, bg=COLORS['bg_secondary'])
         port_frame.pack(anchor='w', pady=10)
         
-        tk.Label(port_frame, text="Port:", font=('Segoe UI', 10),
+        tk.Label(port_frame, text="Ports:", font=('Segoe UI', 10),
                 fg=COLORS['text_primary'], bg=COLORS['bg_secondary']).pack(side='left')
         
-        tk.Entry(port_frame, textvariable=self.syslog_port_var, width=10,
+        tk.Entry(port_frame, textvariable=self.syslog_port_var, width=20,
                 font=('Segoe UI', 10), bg=COLORS['bg_tertiary'],
                 fg=COLORS['text_primary']).pack(side='left', padx=10)
+        
+        tk.Label(port_frame, text="(comma-separated, e.g. 514,1514,8514)", font=('Segoe UI', 9),
+                fg=COLORS['text_secondary'], bg=COLORS['bg_secondary']).pack(side='left', padx=5)
         
         # Network Monitor
         net_frame = tk.LabelFrame(container, text=" 🌐 Network Monitor ",
@@ -1128,9 +1134,12 @@ class SIEMApplication:
         # Start Syslog server
         if self.syslog_enabled.get():
             try:
-                port = int(self.syslog_port_var.get())
-                self.syslog_server.udp_port = port
-                self.syslog_server.tcp_port = port
+                # Parse comma-separated ports
+                port_str = self.syslog_port_var.get()
+                ports = [int(p.strip()) for p in port_str.split(',') if p.strip().isdigit()]
+                if ports:
+                    self.syslog_server.udp_ports = ports
+                    self.syslog_server.tcp_ports = ports
             except:
                 pass
             if self.syslog_server.start():
@@ -1289,7 +1298,7 @@ class SIEMApplication:
         messagebox.showinfo("Alerts Acknowledged", "All alerts have been acknowledged.")
     
     def save_settings(self):
-        """Save settings"""
+        """Save settings and apply them immediately"""
         settings = {
             'threshold': self.threshold_var.get(),
             'max_events': self.max_events_var.get(),
@@ -1302,10 +1311,25 @@ class SIEMApplication:
         with open('siem_settings.json', 'w') as f:
             json.dump(settings, f, indent=2)
         
-        messagebox.showinfo("Settings Saved", "Your settings have been saved successfully.")
+        # Apply max_events setting - create new deque with updated maxlen
+        try:
+            new_max = int(self.max_events_var.get())
+            if new_max != self.events.maxlen:
+                # Preserve existing events up to new limit
+                old_events = list(self.events)
+                self.events = deque(old_events[:new_max], maxlen=new_max)
+        except ValueError:
+            pass
+        
+        # If monitoring is active, show restart message for collector changes
+        if self.is_monitoring:
+            messagebox.showinfo("Settings Saved", 
+                "Settings saved. Collector changes (Windows/Syslog/Network) will take effect after restarting monitoring.")
+        else:
+            messagebox.showinfo("Settings Saved", "Your settings have been saved successfully.")
     
     def load_settings(self):
-        """Load saved settings"""
+        """Load saved settings and apply them"""
         try:
             with open('siem_settings.json', 'r') as f:
                 settings = json.load(f)
@@ -1315,5 +1339,16 @@ class SIEMApplication:
                 self.syslog_enabled.set(settings.get('syslog_enabled', True))
                 self.syslog_port_var.set(settings.get('syslog_port', '514'))
                 self.net_enabled.set(settings.get('net_enabled', True))
-        except:
-            pass
+                
+                # Apply max_events to the deque
+                try:
+                    new_max = int(settings.get('max_events', '5000'))
+                    if new_max != self.events.maxlen:
+                        self.events = deque(maxlen=new_max)
+                        self.alerts = deque(maxlen=max(500, new_max // 10))
+                except ValueError:
+                    pass
+        except FileNotFoundError:
+            pass  # No settings file yet, use defaults
+        except Exception:
+            pass  # Handle any other errors gracefully
