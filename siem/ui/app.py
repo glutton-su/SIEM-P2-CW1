@@ -15,7 +15,6 @@ from ..config import COLORS, SEVERITY_COLORS
 from ..utils import EventQueue
 from ..collectors import (
     WindowsEventLogCollector, 
-    LogFileCollector, 
     SyslogServer, 
     NetworkMonitor,
     HAS_WIN32
@@ -48,7 +47,6 @@ class SIEMApplication:
         
         # Data collectors
         self.windows_collector = WindowsEventLogCollector(self.event_queue)
-        self.log_collector = LogFileCollector(self.event_queue)
         self.syslog_server = SyslogServer(self.event_queue)
         self.network_monitor = NetworkMonitor(self.event_queue)
         
@@ -56,7 +54,6 @@ class SIEMApplication:
         self.is_monitoring = False
         self.collector_status = {
             'windows': False,
-            'logfiles': False,
             'syslog': False,
             'network': False
         }
@@ -145,107 +142,353 @@ class SIEMApplication:
 
     def create_static_analysis_tab(self):
         """Create the Static Analysis tab for one-time log analysis"""
-        import os
+        from ..collectors import StaticLogAnalyzer
+        
         static_tab = tk.Frame(self.notebook, bg=COLORS['bg_dark'])
         self.notebook.add(static_tab, text="  🗂️ Static Analysis  ")
+        
+        # Store analyzer instance
+        self.static_analyzer = StaticLogAnalyzer()
+        self.static_report = None
 
+        # Header
         title = tk.Label(static_tab, text="🗂️ Static Log Analysis", font=('Segoe UI', 18, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_dark'])
-        title.pack(pady=20, padx=20, anchor='w')
+        title.pack(pady=(15, 5), padx=20, anchor='w')
+        
+        subtitle = tk.Label(static_tab, text="Analyze log files to detect security events, patterns, and threats", font=('Segoe UI', 10), fg=COLORS['text_secondary'], bg=COLORS['bg_dark'])
+        subtitle.pack(pady=(0, 10), padx=20, anchor='w')
 
-        container = tk.Frame(static_tab, bg=COLORS['bg_secondary'])
-        container.pack(fill='both', expand=True, padx=20, pady=(0, 20))
+        # Main container with two panes
+        main_container = tk.Frame(static_tab, bg=COLORS['bg_dark'])
+        main_container.pack(fill='both', expand=True, padx=20, pady=(0, 20))
 
-        # Path selection
-        path_frame = tk.Frame(container, bg=COLORS['bg_secondary'])
-        path_frame.pack(fill='x', pady=10)
+        # Left panel - Controls and Summary (scrollable)
+        left_panel_outer = tk.Frame(main_container, bg=COLORS['bg_secondary'], width=320)
+        left_panel_outer.pack(side='left', fill='y', padx=(0, 10))
+        left_panel_outer.pack_propagate(False)
+        
+        # Create canvas and scrollbar for scrolling
+        left_canvas = tk.Canvas(left_panel_outer, bg=COLORS['bg_secondary'], highlightthickness=0, width=300)
+        left_scrollbar = ttk.Scrollbar(left_panel_outer, orient='vertical', command=left_canvas.yview)
+        left_panel = tk.Frame(left_canvas, bg=COLORS['bg_secondary'])
+        
+        # Configure scrolling
+        left_panel.bind('<Configure>', lambda e: left_canvas.configure(scrollregion=left_canvas.bbox('all')))
+        left_canvas.create_window((0, 0), window=left_panel, anchor='nw', width=300)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        left_scrollbar.pack(side='right', fill='y')
+        left_canvas.pack(side='left', fill='both', expand=True)
+        
+        # Enable mousewheel scrolling only when hovering over left panel
+        def _on_mousewheel(event):
+            left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        def _bind_mousewheel(event):
+            left_canvas.bind_all('<MouseWheel>', _on_mousewheel)
+        def _unbind_mousewheel(event):
+            left_canvas.unbind_all('<MouseWheel>')
+        left_canvas.bind('<Enter>', _bind_mousewheel)
+        left_canvas.bind('<Leave>', _unbind_mousewheel)
+        
+        # Path selection section
+        path_section = tk.LabelFrame(left_panel, text=" 📁 Select Logs ", font=('Segoe UI', 10, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_secondary'])
+        path_section.pack(fill='x', padx=10, pady=10)
+        
         self.static_log_path_var = tk.StringVar()
-        tk.Label(path_frame, text="Log Path:", font=('Segoe UI', 10), fg=COLORS['text_primary'], bg=COLORS['bg_secondary']).pack(side='left')
-        tk.Entry(path_frame, textvariable=self.static_log_path_var, width=40, font=('Segoe UI', 10), bg=COLORS['bg_tertiary'], fg=COLORS['text_primary']).pack(side='left', padx=10)
-        ModernButton(path_frame, "Browse", command=self.browse_static_log_path, width=80, bg_color=COLORS['accent_blue']).pack(side='left')
-        ModernButton(path_frame, "Analyze", command=self.analyze_static_logs, width=80, bg_color=COLORS['accent_green']).pack(side='left', padx=5)
+        tk.Entry(path_section, textvariable=self.static_log_path_var, width=30, font=('Segoe UI', 9), bg=COLORS['bg_tertiary'], fg=COLORS['text_primary'], insertbackground=COLORS['text_primary']).pack(fill='x', padx=10, pady=(10, 5))
+        
+        btn_frame = tk.Frame(path_section, bg=COLORS['bg_secondary'])
+        btn_frame.pack(fill='x', padx=10, pady=(0, 10))
+        ModernButton(btn_frame, "📂 Browse File", command=self.browse_static_file, width=95, bg_color=COLORS['accent_blue']).pack(side='left', padx=(0, 5))
+        ModernButton(btn_frame, "📁 Browse Dir", command=self.browse_static_dir, width=95, bg_color=COLORS['accent_blue']).pack(side='left')
+        
+        ModernButton(path_section, "▶ Analyze Logs", command=self.analyze_static_logs, width=200, bg_color=COLORS['accent_green']).pack(pady=(0, 10))
+        
+        # Summary section
+        summary_section = tk.LabelFrame(left_panel, text=" 📊 Analysis Summary ", font=('Segoe UI', 10, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_secondary'])
+        summary_section.pack(fill='x', padx=10, pady=10)
+        
+        self.static_summary_labels = {}
+        summary_items = [
+            ('total', '📋 Total Events:', '0'),
+            ('critical', '🔴 Critical:', '0'),
+            ('high', '🟠 High:', '0'),
+            ('medium', '🟡 Medium:', '0'),
+            ('low', '🔵 Low:', '0'),
+            ('info', '🟢 Info:', '0'),
+            ('ips', '🌐 Unique IPs:', '0'),
+            ('files', '📄 Files Analyzed:', '0'),
+            ('threat', '⚠️ Threat Score:', '0/100'),
+        ]
+        for key, label, default in summary_items:
+            row = tk.Frame(summary_section, bg=COLORS['bg_secondary'])
+            row.pack(fill='x', padx=10, pady=2)
+            tk.Label(row, text=label, font=('Segoe UI', 9), fg=COLORS['text_secondary'], bg=COLORS['bg_secondary'], anchor='w', width=15).pack(side='left')
+            lbl = tk.Label(row, text=default, font=('Segoe UI', 9, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_secondary'], anchor='e')
+            lbl.pack(side='right')
+            self.static_summary_labels[key] = lbl
+        
+        # Filter section
+        filter_section = tk.LabelFrame(left_panel, text=" 🔍 Filter Results ", font=('Segoe UI', 10, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_secondary'])
+        filter_section.pack(fill='x', padx=10, pady=10)
+        
+        # Severity filter
+        tk.Label(filter_section, text="Severity:", font=('Segoe UI', 9), fg=COLORS['text_secondary'], bg=COLORS['bg_secondary']).pack(anchor='w', padx=10, pady=(5, 0))
+        self.static_severity_var = tk.StringVar(value="All")
+        severity_combo = ttk.Combobox(filter_section, textvariable=self.static_severity_var, values=["All", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"], state='readonly', width=28)
+        severity_combo.pack(fill='x', padx=10, pady=2)
+        severity_combo.bind('<<ComboboxSelected>>', lambda e: self.filter_static_results())
+        
+        # Category filter
+        tk.Label(filter_section, text="Category:", font=('Segoe UI', 9), fg=COLORS['text_secondary'], bg=COLORS['bg_secondary']).pack(anchor='w', padx=10, pady=(5, 0))
+        self.static_category_var = tk.StringVar(value="All")
+        self.static_category_combo = ttk.Combobox(filter_section, textvariable=self.static_category_var, values=["All"], state='readonly', width=28)
+        self.static_category_combo.pack(fill='x', padx=10, pady=2)
+        self.static_category_combo.bind('<<ComboboxSelected>>', lambda e: self.filter_static_results())
+        
+        # Search filter
+        tk.Label(filter_section, text="Search:", font=('Segoe UI', 9), fg=COLORS['text_secondary'], bg=COLORS['bg_secondary']).pack(anchor='w', padx=10, pady=(5, 0))
+        self.static_search_var = tk.StringVar()
+        search_entry = tk.Entry(filter_section, textvariable=self.static_search_var, font=('Segoe UI', 9), bg=COLORS['bg_tertiary'], fg=COLORS['text_primary'], insertbackground=COLORS['text_primary'])
+        search_entry.pack(fill='x', padx=10, pady=(2, 10))
+        search_entry.bind('<Return>', lambda e: self.filter_static_results())
+        ModernButton(filter_section, "Apply Filter", command=self.filter_static_results, width=200, bg_color=COLORS['accent_purple']).pack(pady=(0, 10))
+        
+        # Export section
+        export_section = tk.LabelFrame(left_panel, text=" 💾 Export ", font=('Segoe UI', 10, 'bold'), fg=COLORS['text_primary'], bg=COLORS['bg_secondary'])
+        export_section.pack(fill='x', padx=10, pady=10)
+        
+        export_btn_frame = tk.Frame(export_section, bg=COLORS['bg_secondary'])
+        export_btn_frame.pack(fill='x', padx=10, pady=10)
+        ModernButton(export_btn_frame, "📄 JSON", command=lambda: self.export_static_report('json'), width=95, bg_color=COLORS['accent_orange']).pack(side='left', padx=(0, 5))
+        ModernButton(export_btn_frame, "📊 CSV", command=lambda: self.export_static_report('csv'), width=95, bg_color=COLORS['accent_orange']).pack(side='left')
 
-        # Results table
+        # Right panel - Results
+        right_panel = tk.Frame(main_container, bg=COLORS['bg_secondary'])
+        right_panel.pack(side='left', fill='both', expand=True)
+        
+        # Notebook for different views
+        self.static_notebook = ttk.Notebook(right_panel, style="Custom.TNotebook")
+        self.static_notebook.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Events tab
+        events_frame = tk.Frame(self.static_notebook, bg=COLORS['bg_secondary'])
+        self.static_notebook.add(events_frame, text=" Events ")
+        
         columns = ("Timestamp", "Severity", "Source", "Category", "Event", "IP", "Message")
-        self.static_tree = ttk.Treeview(container, columns=columns, show='headings', height=20, style="Custom.Treeview")
+        self.static_tree = ttk.Treeview(events_frame, columns=columns, show='headings', style="Custom.Treeview")
         for col in columns:
             self.static_tree.heading(col, text=col)
-            self.static_tree.column(col, width=120 if col != "Message" else 400, anchor='w')
-        self.static_tree.pack(fill='both', expand=True, pady=10)
+            width = 100 if col not in ("Message", "Timestamp") else (350 if col == "Message" else 140)
+            self.static_tree.column(col, width=width, anchor='w')
+        
+        static_scroll = ttk.Scrollbar(events_frame, orient='vertical', command=self.static_tree.yview)
+        self.static_tree.configure(yscrollcommand=static_scroll.set)
+        self.static_tree.pack(side='left', fill='both', expand=True)
+        static_scroll.pack(side='right', fill='y')
+        
+        # IP Analysis tab
+        ip_frame = tk.Frame(self.static_notebook, bg=COLORS['bg_secondary'])
+        self.static_notebook.add(ip_frame, text=" IP Analysis ")
+        
+        ip_columns = ("IP Address", "Events", "Risk Score", "Critical", "High", "Top Category", "First Seen", "Last Seen")
+        self.static_ip_tree = ttk.Treeview(ip_frame, columns=ip_columns, show='headings', style="Custom.Treeview")
+        for col in ip_columns:
+            self.static_ip_tree.heading(col, text=col)
+            self.static_ip_tree.column(col, width=100, anchor='w')
+        
+        ip_scroll = ttk.Scrollbar(ip_frame, orient='vertical', command=self.static_ip_tree.yview)
+        self.static_ip_tree.configure(yscrollcommand=ip_scroll.set)
+        self.static_ip_tree.pack(side='left', fill='both', expand=True)
+        ip_scroll.pack(side='right', fill='y')
+        
+        # Alerts tab
+        alerts_frame = tk.Frame(self.static_notebook, bg=COLORS['bg_secondary'])
+        self.static_notebook.add(alerts_frame, text=" Security Alerts ")
+        
+        alert_columns = ("Timestamp", "Severity", "Category", "Event", "IP", "Source", "Message")
+        self.static_alerts_tree = ttk.Treeview(alerts_frame, columns=alert_columns, show='headings', style="Custom.Treeview")
+        for col in alert_columns:
+            self.static_alerts_tree.heading(col, text=col)
+            width = 200 if col == "Message" else 100
+            self.static_alerts_tree.column(col, width=width, anchor='w')
+        
+        alerts_scroll = ttk.Scrollbar(alerts_frame, orient='vertical', command=self.static_alerts_tree.yview)
+        self.static_alerts_tree.configure(yscrollcommand=alerts_scroll.set)
+        self.static_alerts_tree.pack(side='left', fill='both', expand=True)
+        alerts_scroll.pack(side='right', fill='y')
 
-    def browse_static_log_path(self):
-        """Browse for static log file or directory"""
-        import os
-        from tkinter import filedialog
-        path = filedialog.askopenfilename(title="Select Log File")
-        if not path:
-            path = filedialog.askdirectory(title="Select Log Directory")
+    def browse_static_file(self):
+        """Browse for static log file"""
+        path = filedialog.askopenfilename(title="Select Log File", filetypes=[("Log files", "*.log *.txt *.json *.csv"), ("All files", "*.*")])
         if path:
             self.static_log_path_var.set(path)
 
+    def browse_static_dir(self):
+        """Browse for static log directory"""
+        path = filedialog.askdirectory(title="Select Log Directory")
+        if path:
+            self.static_log_path_var.set(path)
+
+    def browse_static_log_path(self):
+        """Browse for static log file or directory (legacy)"""
+        self.browse_static_file()
+
     def analyze_static_logs(self):
-        """Analyze the selected log file or directory for alerts/events"""
-        import os
-        from ..collectors import LogFileCollector
-        from ..utils import EventQueue
-        from tkinter import messagebox
+        """Analyze the selected log file or directory using StaticLogAnalyzer"""
         path = self.static_log_path_var.get()
         if not path:
             messagebox.showwarning("No Path", "Please select a log file or directory first.")
             return
-        # Clear previous results
+        
+        if not os.path.exists(path):
+            messagebox.showerror("Invalid Path", f"Path does not exist: {path}")
+            return
+        
+        # Show loading indicator
+        self.root.config(cursor="wait")
+        self.root.update()
+        
+        try:
+            # Analyze using StaticLogAnalyzer
+            self.static_report = self.static_analyzer.analyze_path(path)
+            
+            # Update summary
+            summary = self.static_report['summary']
+            self.static_summary_labels['total'].config(text=str(summary['total_events']))
+            self.static_summary_labels['critical'].config(text=str(summary['critical_count']), fg=COLORS['accent_red'] if summary['critical_count'] > 0 else COLORS['text_primary'])
+            self.static_summary_labels['high'].config(text=str(summary['high_count']), fg=COLORS['accent_orange'] if summary['high_count'] > 0 else COLORS['text_primary'])
+            self.static_summary_labels['medium'].config(text=str(summary['medium_count']))
+            self.static_summary_labels['low'].config(text=str(summary['low_count']))
+            self.static_summary_labels['info'].config(text=str(summary['info_count']))
+            self.static_summary_labels['ips'].config(text=str(summary['unique_ips']))
+            self.static_summary_labels['files'].config(text=str(len(self.static_report['files_analyzed'])))
+            self.static_summary_labels['threat'].config(text=f"{summary['threat_score']}/100", fg=COLORS['accent_red'] if summary['threat_score'] > 50 else COLORS['accent_green'])
+            
+            # Update category filter
+            categories = ["All"] + list(self.static_report['category_breakdown'].keys())
+            self.static_category_combo['values'] = categories
+            
+            # Populate events table
+            self._populate_static_events(self.static_report['events'])
+            
+            # Populate IP analysis table
+            self._populate_static_ip_analysis(self.static_report['ip_analysis'])
+            
+            # Populate alerts table
+            self._populate_static_alerts(self.static_report['security_alerts'])
+            
+            messagebox.showinfo("Analysis Complete", f"Analyzed {len(self.static_report['files_analyzed'])} files.\nFound {summary['total_events']} events.\nCritical: {summary['critical_count']} | High: {summary['high_count']}")
+            
+        except Exception as e:
+            messagebox.showerror("Analysis Error", f"Error during analysis: {str(e)}")
+        finally:
+            self.root.config(cursor="")
+    
+    def _populate_static_events(self, events):
+        """Populate the static events treeview"""
         for item in self.static_tree.get_children():
             self.static_tree.delete(item)
-        temp_queue = EventQueue()
-        temp_collector = LogFileCollector(temp_queue)
-        files_read = 0
-        log_extensions = ['.log', '.txt', '.csv', '.json']
-        def read_entire_file(filepath):
+        
+        for event in events:
+            self.static_tree.insert('', 'end', values=(
+                event.get('timestamp', ''),
+                event.get('severity', 'INFO'),
+                event.get('source', '-'),
+                event.get('category', '-'),
+                event.get('event', '-'),
+                event.get('ip', '-'),
+                event.get('message', '')[:200]
+            ), tags=(event.get('severity', 'INFO'),))
+        
+        # Color code by severity
+        self.static_tree.tag_configure('CRITICAL', foreground=COLORS['accent_red'])
+        self.static_tree.tag_configure('HIGH', foreground=COLORS['accent_orange'])
+        self.static_tree.tag_configure('MEDIUM', foreground=COLORS['accent_yellow'])
+    
+    def _populate_static_ip_analysis(self, ip_analysis):
+        """Populate the IP analysis treeview"""
+        for item in self.static_ip_tree.get_children():
+            self.static_ip_tree.delete(item)
+        
+        for ip_data in ip_analysis:
+            risk_tag = 'high_risk' if ip_data['risk_score'] > 50 else 'normal'
+            self.static_ip_tree.insert('', 'end', values=(
+                ip_data['ip'],
+                ip_data['event_count'],
+                f"{ip_data['risk_score']}/100",
+                ip_data['critical_events'],
+                ip_data['high_events'],
+                ip_data['top_category'],
+                ip_data['first_seen'] or '-',
+                ip_data['last_seen'] or '-'
+            ), tags=(risk_tag,))
+        
+        self.static_ip_tree.tag_configure('high_risk', foreground=COLORS['accent_red'])
+    
+    def _populate_static_alerts(self, alerts):
+        """Populate the security alerts treeview"""
+        for item in self.static_alerts_tree.get_children():
+            self.static_alerts_tree.delete(item)
+        
+        for alert in alerts:
+            self.static_alerts_tree.insert('', 'end', values=(
+                alert['timestamp'],
+                alert['severity'],
+                alert['category'],
+                alert['event'],
+                alert['ip'],
+                alert['source'],
+                alert['message'][:150]
+            ), tags=(alert['severity'],))
+        
+        self.static_alerts_tree.tag_configure('CRITICAL', foreground=COLORS['accent_red'])
+        self.static_alerts_tree.tag_configure('HIGH', foreground=COLORS['accent_orange'])
+    
+    def filter_static_results(self):
+        """Filter static analysis results based on selected criteria"""
+        if not self.static_report:
+            return
+        
+        severity_filter = self.static_severity_var.get()
+        category_filter = self.static_category_var.get()
+        search_term = self.static_search_var.get().lower()
+        
+        filtered_events = []
+        for event in self.static_report['events']:
+            # Severity filter
+            if severity_filter != "All" and event['severity'] != severity_filter:
+                continue
+            # Category filter
+            if category_filter != "All" and event['category'] != category_filter:
+                continue
+            # Search filter
+            if search_term:
+                searchable = f"{event['message']} {event['ip']} {event['source']} {event['event']}".lower()
+                if search_term not in searchable:
+                    continue
+            filtered_events.append(event)
+        
+        self._populate_static_events(filtered_events)
+    
+    def export_static_report(self, format):
+        """Export the static analysis report"""
+        if not self.static_report:
+            messagebox.showwarning("No Data", "Please run an analysis first.")
+            return
+        
+        if format == 'json':
+            filepath = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")], title="Export JSON Report")
+        else:
+            filepath = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Export CSV Report")
+        
+        if filepath:
             try:
-                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            event = temp_collector._parse_log_line(line, filepath)
-                            if event:
-                                temp_queue.put(event)
-            except Exception:
-                pass
-        if os.path.isfile(path):
-            read_entire_file(path)
-            files_read += 1
-        elif os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
-                for file in files:
-                    file_lower = file.lower()
-                    full_path = os.path.join(root, file)
-                    if any(file_lower.endswith(ext) for ext in log_extensions):
-                        read_entire_file(full_path)
-                        files_read += 1
-                    elif any(ext in file_lower for ext in log_extensions):
-                        read_entire_file(full_path)
-                        files_read += 1
-                    elif '_log' in file_lower or file_lower.endswith('_db'):
-                        read_entire_file(full_path)
-                        files_read += 1
-        # Display results
-        event_count = 0
-        while True:
-            try:
-                event = temp_queue.get_nowait()
-                self.static_tree.insert('', 'end', values=(
-                    event.get('timestamp', ''),
-                    event.get('severity', 'INFO'),
-                    event.get('source', '-'),
-                    event.get('category', '-'),
-                    event.get('event', '-'),
-                    event.get('ip', '-'),
-                    event.get('message', '')[:300]
-                ))
-                event_count += 1
-            except Exception:
-                break
-        from tkinter import messagebox
-        messagebox.showinfo("Static Analysis Complete", f"Analyzed {files_read} files. Found {event_count} events.")
+                self.static_analyzer.export_report(self.static_report, filepath, format)
+                messagebox.showinfo("Export Complete", f"Report exported to:\n{filepath}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export: {str(e)}")
     
     def create_header(self):
         """Create the application header"""
@@ -274,7 +517,7 @@ class SIEMApplication:
         status_frame.pack(side='left', padx=30)
         
         self.status_labels = {}
-        statuses = [('WIN', 'windows'), ('LOG', 'logfiles'), ('SYS', 'syslog'), ('NET', 'network')]
+        statuses = [('WIN', 'windows'), ('SYS', 'syslog'), ('NET', 'network')]
         for label, key in statuses:
             frame = tk.Frame(status_frame, bg=COLORS['bg_secondary'])
             frame.pack(side='left', padx=5)
@@ -484,8 +727,6 @@ class SIEMApplication:
         
         # Initialize source variables
         self.win_enabled = tk.BooleanVar(value=HAS_WIN32)
-        self.log_enabled = tk.BooleanVar(value=True)
-        self.log_paths_var = tk.StringVar()
         self.syslog_enabled = tk.BooleanVar(value=True)
         self.syslog_port_var = tk.StringVar(value="514")
         self.net_enabled = tk.BooleanVar(value=True)
@@ -508,37 +749,6 @@ class SIEMApplication:
         tk.Label(win_inner, text="Monitors: Security, System, Application logs",
                 font=('Segoe UI', 9), fg=COLORS['text_secondary'],
                 bg=COLORS['bg_secondary']).pack(anchor='w', pady=(5, 0))
-        
-        # Log File Monitor
-        log_frame = tk.LabelFrame(container, text=" 📁 Log File Monitor ",
-                                 font=('Segoe UI', 11, 'bold'),
-                                 fg=COLORS['text_primary'], bg=COLORS['bg_secondary'])
-        log_frame.pack(fill='x', padx=10, pady=10)
-        
-        log_inner = tk.Frame(log_frame, bg=COLORS['bg_secondary'])
-        log_inner.pack(fill='x', padx=20, pady=15)
-        
-        tk.Checkbutton(log_inner, text="Enable Log File Monitoring",
-                      variable=self.log_enabled, font=('Segoe UI', 10),
-                      fg=COLORS['text_primary'], bg=COLORS['bg_secondary'],
-                      selectcolor=COLORS['bg_tertiary'],
-                      activebackground=COLORS['bg_secondary']).pack(anchor='w')
-        
-        path_frame = tk.Frame(log_inner, bg=COLORS['bg_secondary'])
-        path_frame.pack(fill='x', pady=10)
-        
-        tk.Label(path_frame, text="Paths:", font=('Segoe UI', 10),
-                fg=COLORS['text_primary'], bg=COLORS['bg_secondary']).pack(side='left')
-        
-        tk.Entry(path_frame, textvariable=self.log_paths_var, width=40,
-                font=('Segoe UI', 10), bg=COLORS['bg_tertiary'],
-                fg=COLORS['text_primary']).pack(side='left', padx=10)
-        
-        ModernButton(path_frame, "Browse", command=self.browse_log_path,
-                    width=80, bg_color=COLORS['accent_blue']).pack(side='left')
-        
-        ModernButton(path_frame, "Preview", command=self.preview_static_logs,
-                    width=80, bg_color=COLORS['accent_green']).pack(side='left', padx=5)
         
         # Syslog Server
         syslog_frame = tk.LabelFrame(container, text=" 📨 Syslog Server ",
@@ -915,18 +1125,6 @@ class SIEMApplication:
                 self.collector_status['windows'] = True
                 self.status_labels['windows'].configure(fg=COLORS['accent_green'])
         
-        # Start Log File collector
-        if self.log_enabled.get():
-            paths = self.log_paths_var.get()
-            if paths:
-                for path in paths.split(';'):
-                    path = path.strip()
-                    if path:
-                        self.log_collector.add_path(path)
-            if self.log_collector.start():
-                self.collector_status['logfiles'] = True
-                self.status_labels['logfiles'].configure(fg=COLORS['accent_green'])
-        
         # Start Syslog server
         if self.syslog_enabled.get():
             try:
@@ -961,7 +1159,6 @@ class SIEMApplication:
         
         # Stop all collectors
         self.windows_collector.stop()
-        self.log_collector.stop()
         self.syslog_server.stop()
         self.network_monitor.stop()
         
@@ -971,99 +1168,6 @@ class SIEMApplication:
             self.status_labels[key].configure(fg=COLORS['text_secondary'])
         
         self.update_stats()
-    
-    def browse_log_path(self):
-        """Browse for log file or directory"""
-        path = filedialog.askdirectory(title="Select Log Directory")
-        if path:
-            current = self.log_paths_var.get()
-            if current:
-                self.log_paths_var.set(f"{current};{path}")
-            else:
-                self.log_paths_var.set(path)
-    
-    def preview_static_logs(self):
-        """Preview logs statically without live monitoring"""
-        paths = self.log_paths_var.get()
-        if not paths:
-            messagebox.showwarning("No Path", "Please select a log directory first using Browse.")
-            return
-        
-        # Ask user if they want to clear existing events
-        if self.events:
-            clear = messagebox.askyesno("Clear Events", 
-                "Do you want to clear existing events before loading?")
-            if clear:
-                self.events.clear()
-                for item in self.events_tree.get_children():
-                    self.events_tree.delete(item)
-                self.event_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0}
-                self.category_counts = {}
-        
-        # Create a temporary collector just for reading (not monitoring)
-        from ..collectors import LogFileCollector
-        temp_queue = EventQueue()
-        temp_collector = LogFileCollector(temp_queue)
-        
-        # Read all logs from specified paths
-        loaded_count = 0
-        for path in paths.split(';'):
-            path = path.strip()
-            if path:
-                loaded_count += self._load_static_logs(path, temp_collector)
-        
-        # Process all collected events from the temp queue
-        event_count = 0
-        while not temp_queue.empty():
-            try:
-                event = temp_queue.get_nowait()
-                self.process_event(event)
-                event_count += 1
-            except:
-                break
-        
-        messagebox.showinfo("Preview Complete", 
-            f"Loaded {event_count} log entries from {loaded_count} files.")
-    
-    def _load_static_logs(self, path, collector):
-        """Load logs from a path statically (one-time read)"""
-        import os
-        files_read = 0
-        log_extensions = ['.log', '.txt', '.csv', '.json']
-        
-        if os.path.isfile(path):
-            self._read_entire_file(path, collector)
-            return 1
-        elif os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
-                for file in files:
-                    file_lower = file.lower()
-                    full_path = os.path.join(root, file)
-                    # Check for log files
-                    if any(file_lower.endswith(ext) for ext in log_extensions):
-                        self._read_entire_file(full_path, collector)
-                        files_read += 1
-                    elif any(ext in file_lower for ext in log_extensions):
-                        self._read_entire_file(full_path, collector)
-                        files_read += 1
-                    elif '_log' in file_lower or file_lower.endswith('_db'):
-                        self._read_entire_file(full_path, collector)
-                        files_read += 1
-        return files_read
-    
-    def _read_entire_file(self, filepath, collector):
-        """Read entire file content for static preview"""
-        import os
-        try:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        event = collector._parse_log_line(line, filepath)
-                        if event:
-                            collector.event_queue.put(event)
-        except Exception as e:
-            pass
     
     def filter_events(self, severity=None):
         """Filter events by severity"""
@@ -1190,8 +1294,6 @@ class SIEMApplication:
             'threshold': self.threshold_var.get(),
             'max_events': self.max_events_var.get(),
             'win_enabled': self.win_enabled.get(),
-            'log_enabled': self.log_enabled.get(),
-            'log_paths': self.log_paths_var.get(),
             'syslog_enabled': self.syslog_enabled.get(),
             'syslog_port': self.syslog_port_var.get(),
             'net_enabled': self.net_enabled.get()
@@ -1210,8 +1312,6 @@ class SIEMApplication:
                 self.threshold_var.set(settings.get('threshold', 'HIGH'))
                 self.max_events_var.set(settings.get('max_events', '5000'))
                 self.win_enabled.set(settings.get('win_enabled', HAS_WIN32))
-                self.log_enabled.set(settings.get('log_enabled', True))
-                self.log_paths_var.set(settings.get('log_paths', ''))
                 self.syslog_enabled.set(settings.get('syslog_enabled', True))
                 self.syslog_port_var.set(settings.get('syslog_port', '514'))
                 self.net_enabled.set(settings.get('net_enabled', True))
