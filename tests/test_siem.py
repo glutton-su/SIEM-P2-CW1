@@ -276,5 +276,99 @@ class TestUIState(unittest.TestCase):
         self.assertEqual(len(high_events), 2)
 
 
+class SIEMTestResult(unittest.TestResult):
+    """Custom test result that tracks progress with pytest-style output"""
+    
+    def __init__(self, total_tests):
+        super().__init__()
+        self.total_tests = total_tests
+        self.completed = 0
+        self.test_details = []
+    
+    def startTest(self, test):
+        super().startTest(test)
+    
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self.completed += 1
+        self._print_result(test, 'PASSED', '\033[92m')  # Green
+        self.test_details.append({'name': self._get_test_name(test), 'status': 'PASSED'})
+    
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self.completed += 1
+        self._print_result(test, 'FAILED', '\033[91m')  # Red
+        self.test_details.append({'name': self._get_test_name(test), 'status': 'FAILED'})
+    
+    def addError(self, test, err):
+        super().addError(test, err)
+        self.completed += 1
+        self._print_result(test, 'ERROR', '\033[91m')  # Red
+        self.test_details.append({'name': self._get_test_name(test), 'status': 'ERROR'})
+    
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self.completed += 1
+        self._print_result(test, 'SKIPPED', '\033[93m')  # Yellow
+        self.test_details.append({'name': self._get_test_name(test), 'status': 'SKIPPED'})
+    
+    def _get_test_name(self, test):
+        """Get full test name in pytest format"""
+        test_method = str(test).split()[0]
+        test_class = test.__class__.__name__
+        return f"test_siem.py::{test_class}::{test_method}"
+    
+    def _print_result(self, test, status, color):
+        """Print test result in pytest style"""
+        percentage = (self.completed / self.total_tests) * 100
+        test_name = self._get_test_name(test)
+        reset = '\033[0m'
+        
+        # Calculate padding for right-aligned percentage
+        line = f"{test_name} {color}{status}{reset}"
+        percentage_str = f"[{percentage:3.0f}%]"
+        
+        # Print with percentage right-aligned
+        print(f"{test_name} {color}{status}{reset} {percentage_str:>10}")
+
+
+class SIEMTestRunner:
+    """Custom test runner with pytest-style output"""
+    
+    def run(self, suite):
+        total = suite.countTestCases()
+        
+        print("=" * 70 + " test session starts " + "=" * 10)
+        print(f"platform win32 -- Python 3.13.12, unittest")
+        print(f"rootdir: {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}")
+        print(f"collected {total} items\n")
+        
+        result = SIEMTestResult(total)
+        suite.run(result)
+        
+        # Print summary line
+        passed = len([t for t in result.test_details if t['status'] == 'PASSED'])
+        failed = len([t for t in result.test_details if t['status'] == 'FAILED'])
+        errors = len([t for t in result.test_details if t['status'] == 'ERROR'])
+        
+        print("\n" + "=" * 70)
+        
+        if result.wasSuccessful():
+            print(f"\033[92m{passed} passed\033[0m in {time.time() - self.start_time:.2f}s")
+        else:
+            print(f"\033[91m{failed} failed\033[0m, \033[92m{passed} passed\033[0m")
+        
+        return result
+    
+    def __init__(self):
+        self.start_time = time.time()
+
+
 if __name__ == '__main__':
-    unittest.main()
+    # Load all tests
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromModule(sys.modules[__name__])
+    
+    # Run with custom runner
+    runner = SIEMTestRunner()
+    runner.run(suite)
