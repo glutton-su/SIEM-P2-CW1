@@ -1,13 +1,3 @@
-"""
-SIEM - Security Information and Event Management System
-Main entry point for the application.
-
-A real working SIEM with actual data collection from:
-- Windows Event Logs (Security, System, Application)
-- Log File Monitoring
-- Syslog Server (UDP/TCP)
-- Network Traffic Monitoring
-"""
 
 import tkinter as tk
 from siem.ui import SIEMApplication
